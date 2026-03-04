@@ -1,0 +1,15 @@
+{
+  "name": "strategic-insight-engine",
+  "version": "1.0.0",
+  "description": "AI-powered strategic analyst for PESTEL analysis",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2"
+  }
+}
