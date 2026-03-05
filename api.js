@@ -28,6 +28,18 @@ export function buildNewsQuery(company, lens, location) {
 }
 
 /**
+ * Build a company-focused NewsAPI query (no PESTEL keywords).
+ * @param {string} company
+ * @param {string} [location]
+ * @returns {string}
+ */
+export function buildCompanyQuery(company, location) {
+  const base = `"${company}"`;
+  if (!location || location === 'Global') return base;
+  return `${base} AND "${location}"`;
+}
+
+/**
  * Calculate the ISO date string N days ago.
  * @param {number} days
  * @returns {string}
@@ -39,7 +51,7 @@ function daysAgoISO(days) {
 }
 
 /**
- * Fetch news articles for a single lens via the local proxy.
+ * Fetch news articles for a single lens + language via the local proxy.
  * @param {object} opts
  * @param {string} opts.company
  * @param {string} opts.lens
@@ -48,13 +60,14 @@ function daysAgoISO(days) {
  * @param {number} opts.pageSize
  * @param {number} opts.timeWindowDays
  * @param {string} [opts.location]
- * @returns {Promise<Array<{headline, source, date, url, lens}>>}
+ * @param {string} [opts.language]  — NewsAPI language code (default 'en')
+ * @returns {Promise<Array<{headline, source, date, url, lens, language}>>}
  */
-export async function fetchLensSignals({ company, lens, proxyUrl, newsApiKey, pageSize, timeWindowDays, location }) {
+export async function fetchLensSignals({ company, lens, proxyUrl, newsApiKey, pageSize, timeWindowDays, location, language = 'en' }) {
   const q = buildNewsQuery(company, lens, location);
   const from = daysAgoISO(timeWindowDays);
 
-  const params = new URLSearchParams({ q, from, pageSize, language: 'en', sortBy: 'relevancy' });
+  const params = new URLSearchParams({ q, from, pageSize, language, sortBy: 'relevancy' });
   const url = `${proxyUrl}/news?${params}`;
 
   const resp = await fetch(url, {
@@ -75,34 +88,111 @@ export async function fetchLensSignals({ company, lens, proxyUrl, newsApiKey, pa
     source:   a.source?.name || 'Unknown',
     date:     a.publishedAt ? a.publishedAt.slice(0, 10) : '',
     url:      a.url || '#',
+    language: language.toUpperCase(),
   }));
 }
 
 /**
- * Fetch signals for all selected lenses in parallel.
+ * Fetch signals for all selected lenses in parallel, across all selected languages.
+ * Deduplicates articles by URL within each lens.
  * @param {object} opts
- * @param {string} [opts.location]
+ * @param {string[]} [opts.languages]  — array of NewsAPI language codes, defaults to ['en']
  * @returns {Promise<Record<string, Array>>}  { Political: [...], Economic: [...] }
  */
-export async function fetchNewsSignals({ company, lenses, proxyUrl, newsApiKey, pageSize, timeWindowDays, location }) {
+export async function fetchNewsSignals({ company, lenses, proxyUrl, newsApiKey, pageSize, timeWindowDays, location, languages = ['en'] }) {
+  // Build one task per (lens × language) pair
+  const tasks = [];
+  lenses.forEach(lens => {
+    languages.forEach(lang => tasks.push({ lens, lang }));
+  });
+
   const results = await Promise.allSettled(
-    lenses.map(lens =>
-      fetchLensSignals({ company, lens, proxyUrl, newsApiKey, pageSize, timeWindowDays, location })
+    tasks.map(({ lens, lang }) =>
+      fetchLensSignals({ company, lens, proxyUrl, newsApiKey, pageSize, timeWindowDays, location, language: lang })
     )
   );
 
+  // Merge results per lens
   const signalMap = {};
+  lenses.forEach(l => { signalMap[l] = []; });
+
   results.forEach((result, i) => {
-    const lens = lenses[i];
+    const { lens } = tasks[i];
     if (result.status === 'fulfilled') {
-      signalMap[lens] = result.value;
+      signalMap[lens].push(...result.value);
     } else {
-      console.warn(`Failed to fetch signals for lens "${lens}":`, result.reason?.message);
-      signalMap[lens] = [];
+      console.warn(`Failed to fetch signals for lens "${tasks[i].lens}" lang "${tasks[i].lang}":`, result.reason?.message);
     }
   });
 
+  // Deduplicate by URL within each lens (first occurrence wins)
+  lenses.forEach(lens => {
+    const seen = new Set();
+    signalMap[lens] = signalMap[lens].filter(a => {
+      if (seen.has(a.url)) return false;
+      seen.add(a.url);
+      return true;
+    });
+  });
+
   return signalMap;
+}
+
+/**
+ * Fetch company-specific news (no PESTEL keywords) across all selected languages.
+ * Deduplicates by URL. Returns a flat array.
+ * @param {object} opts
+ * @param {string} opts.company
+ * @param {string} opts.proxyUrl
+ * @param {string} opts.newsApiKey
+ * @param {number} opts.pageSize
+ * @param {number} opts.timeWindowDays
+ * @param {string[]} [opts.languages]
+ * @param {string} [opts.location]
+ * @returns {Promise<Array<{headline, source, date, url, language}>>}
+ */
+export async function fetchCompanySignals({ company, proxyUrl, newsApiKey, pageSize, timeWindowDays, languages = ['en'], location }) {
+  const q    = buildCompanyQuery(company, location);
+  const from = daysAgoISO(timeWindowDays);
+
+  const results = await Promise.allSettled(
+    languages.map(lang => {
+      const params = new URLSearchParams({ q, from, pageSize, language: lang, sortBy: 'relevancy' });
+      const url    = `${proxyUrl}/news?${params}`;
+      return fetch(url, { headers: { 'x-news-api-key': newsApiKey } })
+        .then(resp => {
+          if (!resp.ok) {
+            return resp.json().catch(() => ({})).then(body => {
+              throw new Error(body.error || `NewsAPI proxy returned ${resp.status}`);
+            });
+          }
+          return resp.json();
+        })
+        .then(data =>
+          (data.articles || []).slice(0, pageSize).map(a => ({
+            headline: a.title || '(no title)',
+            source:   a.source?.name || 'Unknown',
+            date:     a.publishedAt ? a.publishedAt.slice(0, 10) : '',
+            url:      a.url || '#',
+            language: lang.toUpperCase(),
+          }))
+        );
+    })
+  );
+
+  const all = [];
+  results.forEach(r => {
+    if (r.status === 'fulfilled') all.push(...r.value);
+    else console.warn('fetchCompanySignals language call failed:', r.reason?.message);
+  });
+
+  // Deduplicate by URL
+  const seen = new Set();
+  return all.filter(a => {
+    if (seen.has(a.url)) return false;
+    seen.add(a.url);
+    return true;
+  });
 }
 
 // ─── OpenAI API ─────────────────────────────────────────────────────────────
@@ -122,32 +212,47 @@ CRITICAL RULES:
 7. generatedAt must be a valid ISO 8601 timestamp.`;
 
 /**
- * Build the user prompt from company, lenses, signals, and optional location.
+ * Build the user prompt from company, lenses, signals, optional location,
+ * output language, and company signals.
  * @param {string} company
  * @param {string[]} lenses
  * @param {Record<string, Array>} signalMap
  * @param {string} [location]
+ * @param {string} [outputLanguage]
+ * @param {Array}  [companySignals]
  * @returns {string}
  */
-function buildUserPrompt(company, lenses, signalMap, location) {
+function buildUserPrompt(company, lenses, signalMap, location, outputLanguage = 'English', companySignals = []) {
   const locationContext = location && location !== 'Global'
     ? `Geographic focus: ${location}`
     : 'Geographic focus: Global (no geographic restriction)';
+
+  const outputLangLine = `Output language: ${outputLanguage}. Respond entirely in ${outputLanguage}.`;
+
+  // Company signals section (inserted before PESTEL signals)
+  let companySignalSection = '';
+  if (companySignals.length > 0) {
+    const lines = companySignals
+      .map((a, i) => `  ${i + 1}. [${a.source}] ${a.headline} (${a.date}) [${a.language}]`)
+      .join('\n');
+    companySignalSection = `## Company Signals (company-specific news)\n${lines}\n\nWhen writing insights, explicitly note when a Company Signal corroborates or contrasts a PESTEL macro finding.\n\n`;
+  }
 
   const signalSummary = lenses.map(lens => {
     const articles = signalMap[lens] || [];
     if (articles.length === 0) {
       return `## ${lens} Lens\n(No signals retrieved — treat confidence for this lens as low)`;
     }
-    const lines = articles.map((a, i) => `  ${i + 1}. [${a.source}] ${a.headline} (${a.date})`).join('\n');
+    const lines = articles.map((a, i) => `  ${i + 1}. [${a.source}] ${a.headline} (${a.date}) [${a.language}]`).join('\n');
     return `## ${lens} Lens\n${lines}`;
   }).join('\n\n');
 
   return `Analyze the following news signals for **${company}** and produce a strategic intelligence report.
 ${locationContext}
+${outputLangLine}
 
 === NEWS SIGNALS ===
-${signalSummary}
+${companySignalSection}${signalSummary}
 
 === REQUIRED JSON OUTPUT SCHEMA ===
 {
@@ -186,15 +291,17 @@ Produce 3–5 insight cards. Each card must span at least 2 lenses where signals
 /**
  * Call OpenAI API and return the parsed JSON report.
  * @param {object} opts
- * @param {string} opts.claudeKey  — OpenAI API key
+ * @param {string} opts.claudeKey       — OpenAI API key
  * @param {string} opts.company
  * @param {string[]} opts.lenses
  * @param {Record<string, Array>} opts.signalMap
  * @param {string} [opts.location]
+ * @param {string} [opts.outputLanguage]
+ * @param {Array}  [opts.companySignals]
  * @returns {Promise<object>}
  */
-export async function fetchStrategicInsights({ claudeKey, company, lenses, signalMap, location }) {
-  const userPrompt = buildUserPrompt(company, lenses, signalMap, location);
+export async function fetchStrategicInsights({ claudeKey, company, lenses, signalMap, location, outputLanguage = 'English', companySignals = [] }) {
+  const userPrompt = buildUserPrompt(company, lenses, signalMap, location, outputLanguage, companySignals);
 
   const body = {
     model: OPENAI_MODEL,
@@ -224,7 +331,7 @@ export async function fetchStrategicInsights({ claudeKey, company, lenses, signa
   const data = await resp.json();
   const rawText = data.choices?.[0]?.message?.content || '';
 
-  return parseClaudeResponse(rawText, { claudeKey, company, lenses, signalMap, location });
+  return parseClaudeResponse(rawText, { claudeKey, company, lenses, signalMap, location, outputLanguage, companySignals });
 }
 
 /**
@@ -259,8 +366,8 @@ export async function parseClaudeResponse(rawText, retryOpts, isRetry = false) {
   }
 }
 
-async function retryWithStricterPrompt({ claudeKey, company, lenses, signalMap, location }) {
-  const userPrompt = buildUserPrompt(company, lenses, signalMap, location);
+async function retryWithStricterPrompt({ claudeKey, company, lenses, signalMap, location, outputLanguage = 'English', companySignals = [] }) {
+  const userPrompt = buildUserPrompt(company, lenses, signalMap, location, outputLanguage, companySignals);
 
   const body = {
     model: OPENAI_MODEL,
@@ -285,7 +392,7 @@ async function retryWithStricterPrompt({ claudeKey, company, lenses, signalMap, 
   const data    = await resp.json();
   const rawText = data.choices?.[0]?.message?.content || '';
 
-  return parseClaudeResponse(rawText, { claudeKey, company, lenses, signalMap, location }, true);
+  return parseClaudeResponse(rawText, { claudeKey, company, lenses, signalMap, location, outputLanguage, companySignals }, true);
 }
 
 // ─── Deep Dive API ──────────────────────────────────────────────────────────
@@ -315,19 +422,22 @@ CRITICAL RULES:
  * @param {string[]} lenses
  * @param {Record<string, Array>} signalMap
  * @param {string} [location]
+ * @param {string} [outputLanguage]
  * @returns {string}
  */
-function buildDeepDivePrompt(type, data, company, lenses, signalMap, location) {
+function buildDeepDivePrompt(type, data, company, lenses, signalMap, location, outputLanguage = 'English') {
   const locationContext = location && location !== 'Global'
     ? `Geographic focus: ${location}`
     : 'Geographic focus: Global';
+
+  const outputLangLine = `Output language: ${outputLanguage}. Respond entirely in ${outputLanguage}.`;
 
   const signalSummary = lenses.map(lens => {
     const articles = signalMap[lens] || [];
     if (articles.length === 0) {
       return `## ${lens} Lens\n(No signals retrieved)`;
     }
-    const lines = articles.map((a, i) => `  ${i + 1}. [${a.source}] ${a.headline} (${a.date})`).join('\n');
+    const lines = articles.map((a, i) => `  ${i + 1}. [${a.source}] ${a.headline} (${a.date}) [${a.language || 'EN'}]`).join('\n');
     return `## ${lens} Lens\n${lines}`;
   }).join('\n\n');
 
@@ -360,6 +470,7 @@ Strategic Recommendation: ${data.strategicRecommendation}`;
 
   return `Write a market intelligence white paper analysing ${focus}.
 ${locationContext}
+${outputLangLine}
 
 === NEWS SIGNALS ===
 ${signalSummary}
@@ -426,10 +537,11 @@ function parseDeepDiveResponse(rawText) {
  * @param {string[]} opts.lenses
  * @param {Record<string, Array>} opts.signalMap
  * @param {string} [opts.location]
+ * @param {string} [opts.outputLanguage]
  * @returns {Promise<object>}
  */
-export async function fetchDeepDive({ claudeKey, type, data, company, lenses, signalMap, location }) {
-  const userPrompt = buildDeepDivePrompt(type, data, company, lenses, signalMap, location);
+export async function fetchDeepDive({ claudeKey, type, data, company, lenses, signalMap, location, outputLanguage = 'English' }) {
+  const userPrompt = buildDeepDivePrompt(type, data, company, lenses, signalMap, location, outputLanguage);
 
   const body = {
     model: OPENAI_MODEL,

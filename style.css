@@ -1520,3 +1520,78 @@ select:disabled {
   margin-top: 2px;
 }
 
+/* ═══════════════════════════════════════════════════════════
+   RESEARCH LANGUAGE SELECTOR
+   ═══════════════════════════════════════════════════════════ */
+
+.lang-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lang-btn {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 10px;
+  min-width: 52px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: var(--transition);
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.lang-btn:hover:not(.lang-btn--locked) {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.lang-btn.active {
+  border-color: var(--text-accent);
+  color: var(--text-accent);
+  background: rgba(96, 165, 250, 0.08);
+}
+
+/* Locked (English) — always active, not interactive */
+.lang-btn--locked {
+  cursor: default;
+}
+
+.lang-btn--locked.active {
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+  background: var(--bg-raised);
+  opacity: 0.8;
+}
+
+.lang-name {
+  font-family: var(--font-sans);
+  font-size: 0.625rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  opacity: 0.75;
+}
+
+/* ─── Language badge on signal cards ─── */
+.lang-badge {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-accent);
+  padding: 1px 5px;
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 3px;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+

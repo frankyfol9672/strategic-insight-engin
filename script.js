@@ -3,7 +3,7 @@
  * UI logic, state management, orchestration, rendering
  */
 
-import { fetchNewsSignals, fetchStrategicInsights, fetchDeepDive } from './api.js';
+import { fetchNewsSignals, fetchCompanySignals, fetchStrategicInsights, fetchDeepDive } from './api.js';
 
 // ─── PESTEL lens color map ───────────────────────────────────────────────────
 const LENS_COLORS = {
@@ -25,15 +25,45 @@ const REGIONS = {
   'Middle East & Africa':  ['Saudi Arabia', 'UAE', 'South Africa', 'Nigeria', 'Egypt', 'Israel', 'Turkey'],
 };
 
+// ─── Language data ───────────────────────────────────────────────────────────
+const LANGUAGES = [
+  { code: 'en', label: 'English'    },
+  { code: 'fr', label: 'French'     },
+  { code: 'de', label: 'German'     },
+  { code: 'es', label: 'Spanish'    },
+  { code: 'pt', label: 'Portuguese' },
+  { code: 'ar', label: 'Arabic'     },
+  { code: 'zh', label: 'Chinese'    },
+  { code: 'ru', label: 'Russian'    },
+  { code: 'it', label: 'Italian'    },
+  { code: 'nl', label: 'Dutch'      },
+  { code: 'sv', label: 'Swedish'    },
+  { code: 'no', label: 'Norwegian'  },
+  { code: 'he', label: 'Hebrew'     },
+];
+
+// Primary languages to auto-suggest per region
+const REGION_LANGUAGES = {
+  'Global':               ['en'],
+  'Asia Pacific':         ['en', 'zh'],
+  'Europe':               ['en', 'fr', 'de', 'it', 'es'],
+  'North America':        ['en'],
+  'Latin America':        ['en', 'es', 'pt'],
+  'Middle East & Africa': ['en', 'ar'],
+};
+
 // ─── Application State ───────────────────────────────────────────────────────
 const state = {
-  selectedLenses:  [],
-  lastFormValues:  null,
-  lastSignalMap:   null,
-  isGenerating:    false,
-  deepDiveOpen:    false,
-  selectedRegion:  'Global',
-  selectedCountry: '',
+  selectedLenses:     [],
+  lastFormValues:     null,
+  lastSignalMap:      null,
+  lastCompanySignals: [],
+  isGenerating:       false,
+  deepDiveOpen:       false,
+  selectedRegion:     'Global',
+  selectedCountry:    '',
+  selectedLanguages:  ['en'],
+  outputLanguage:     'English',
 };
 
 // ─── DOM References ──────────────────────────────────────────────────────────
@@ -41,10 +71,10 @@ const $ = id => document.getElementById(id);
 
 const els = {
   // Header
-  settingsToggle:  $('settings-toggle'),
-  settingsPanel:   $('settings-panel'),
-  settingsClose:   $('settings-close'),
-  settingsSave:    $('settings-save'),
+  settingsToggle:   $('settings-toggle'),
+  settingsPanel:    $('settings-panel'),
+  settingsClose:    $('settings-close'),
+  settingsSave:     $('settings-save'),
   settingsSavedMsg: $('settings-saved-msg'),
   // Settings inputs
   claudeKeyInput:  $('claude-key-input'),
@@ -58,6 +88,10 @@ const els = {
   timeWindow:      $('time-window'),
   locationRegion:  $('location-region'),
   locationCountry: $('location-country'),
+  // Language selectors
+  researchLangBtns:     document.querySelectorAll('.lang-btn'),
+  outputLangSelect:     $('output-language'),
+  // Generate
   generateBtn:     $('generate-btn'),
   generateBtnText: $('generate-btn-text'),
   generateBtnIcon: $('generate-btn-icon'),
@@ -74,13 +108,14 @@ const els = {
   phase2:          $('phase-2'),
   phase3:          $('phase-3'),
   // Report content areas
-  reportCompanyName:   $('report-company-name'),
-  reportLensesDisplay: $('report-lenses-display'),
-  reportTimestamp:     $('report-timestamp'),
-  signalLayerContent:  $('signal-layer-content'),
-  insightLayerContent: $('insight-layer-content'),
-  outlookLayerContent: $('outlook-layer-content'),
-  reportRegenerate:    $('report-regenerate'),
+  reportCompanyName:    $('report-company-name'),
+  reportLensesDisplay:  $('report-lenses-display'),
+  reportTimestamp:      $('report-timestamp'),
+  companySignalContent: $('company-signal-content'),
+  signalLayerContent:   $('signal-layer-content'),
+  insightLayerContent:  $('insight-layer-content'),
+  outlookLayerContent:  $('outlook-layer-content'),
+  reportRegenerate:     $('report-regenerate'),
   // Offline banner
   offlineBanner:   $('offline-banner'),
   // Deep Dive panel
@@ -98,23 +133,30 @@ const els = {
   ddpSituation:      $('ddp-situation'),
   ddpFindings:       $('ddp-findings'),
   ddpOptionsTbody:   $('ddp-options-tbody'),
-  ddpImplications:          $('ddp-implications'),
-  ddpSignalStrengthBadge:   $('ddp-ss-badge'),
-  ddpSignalStrengthRationale: $('ddp-ss-rationale'),
-  ddpWatchlist:             $('ddp-watchlist'),
+  ddpImplications:             $('ddp-implications'),
+  ddpSignalStrengthBadge:      $('ddp-ss-badge'),
+  ddpSignalStrengthRationale:  $('ddp-ss-rationale'),
+  ddpWatchlist:                $('ddp-watchlist'),
 };
 
 // ─── LocalStorage Helpers ────────────────────────────────────────────────────
 const LS_KEYS = {
-  claudeKey: 'sie_claude_key',
-  newsKey:   'sie_news_key',
-  proxyUrl:  'sie_proxy_url',
+  claudeKey:      'sie_claude_key',
+  newsKey:        'sie_news_key',
+  proxyUrl:       'sie_proxy_url',
+  outputLanguage: 'sie_output_language',
 };
 
 function loadSettings() {
   els.claudeKeyInput.value = localStorage.getItem(LS_KEYS.claudeKey) || '';
   els.newsKeyInput.value   = localStorage.getItem(LS_KEYS.newsKey)   || '';
   els.proxyUrlInput.value  = localStorage.getItem(LS_KEYS.proxyUrl)  || 'http://localhost:3001';
+
+  const savedOutputLang = localStorage.getItem(LS_KEYS.outputLanguage);
+  if (savedOutputLang && els.outputLangSelect) {
+    els.outputLangSelect.value = savedOutputLang;
+    state.outputLanguage = savedOutputLang;
+  }
 }
 
 function saveSettings() {
@@ -170,8 +212,16 @@ els.locationRegion.addEventListener('change', () => {
     opt.textContent = c;
     els.locationCountry.appendChild(opt);
   });
-
   els.locationCountry.disabled = countries.length === 0;
+
+  // Auto-suggest research languages for the new region
+  const suggested = REGION_LANGUAGES[region] || ['en'];
+  state.selectedLanguages = [...new Set(['en', ...suggested])].slice(0, 5);
+  document.querySelectorAll('.lang-btn').forEach(btn => {
+    const isActive = state.selectedLanguages.includes(btn.dataset.lang);
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-pressed', String(isActive));
+  });
 });
 
 els.locationCountry.addEventListener('change', () => {
@@ -192,13 +242,11 @@ els.pestelBtns.forEach(btn => {
     const idx  = state.selectedLenses.indexOf(lens);
 
     if (idx === -1) {
-      // Add if under limit
       if (state.selectedLenses.length >= 3) return;
       state.selectedLenses.push(lens);
       btn.classList.add('active');
       btn.setAttribute('aria-pressed', 'true');
     } else {
-      // Remove
       state.selectedLenses.splice(idx, 1);
       btn.classList.remove('active');
       btn.setAttribute('aria-pressed', 'false');
@@ -207,6 +255,34 @@ els.pestelBtns.forEach(btn => {
     els.lensValidation.classList.add('hidden');
   });
 });
+
+// ─── Research Language Toggles ───────────────────────────────────────────────
+els.researchLangBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    const code = btn.dataset.lang;
+    if (code === 'en') return; // English is locked
+
+    const idx = state.selectedLanguages.indexOf(code);
+    if (idx === -1) {
+      if (state.selectedLanguages.length >= 5) return; // max 5
+      state.selectedLanguages.push(code);
+      btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
+    } else {
+      state.selectedLanguages.splice(idx, 1);
+      btn.classList.remove('active');
+      btn.setAttribute('aria-pressed', 'false');
+    }
+  });
+});
+
+// ─── Output Language ─────────────────────────────────────────────────────────
+if (els.outputLangSelect) {
+  els.outputLangSelect.addEventListener('change', () => {
+    state.outputLanguage = els.outputLangSelect.value;
+    localStorage.setItem(LS_KEYS.outputLanguage, state.outputLanguage);
+  });
+}
 
 // ─── Error Banner ────────────────────────────────────────────────────────────
 function showError(msg) {
@@ -223,7 +299,6 @@ els.errorDismiss.addEventListener('click', hideError);
 
 // ─── Loading State ───────────────────────────────────────────────────────────
 function showLoading(phase, detail) {
-  // 1 = gathering signals, 2 = synthesizing, 3 = building
   [els.phase1, els.phase2, els.phase3].forEach((el, i) => {
     const num = i + 1;
     el.classList.remove('active', 'done');
@@ -233,14 +308,14 @@ function showLoading(phase, detail) {
   if (detail) els.loadingDetail.textContent = detail;
 }
 
-function setReportState(state) {
+function setReportState(reportState) {
   els.reportIdle.classList.add('hidden');
   els.reportLoading.classList.add('hidden');
   els.reportContent.classList.add('hidden');
 
-  if (state === 'idle')    els.reportIdle.classList.remove('hidden');
-  if (state === 'loading') els.reportLoading.classList.remove('hidden');
-  if (state === 'report')  els.reportContent.classList.remove('hidden');
+  if (reportState === 'idle')    els.reportIdle.classList.remove('hidden');
+  if (reportState === 'loading') els.reportLoading.classList.remove('hidden');
+  if (reportState === 'report')  els.reportContent.classList.remove('hidden');
 }
 
 // ─── Form Validation ─────────────────────────────────────────────────────────
@@ -286,26 +361,30 @@ async function generateReport() {
   const pageSize       = parseInt(els.articlesPerLens.value, 10);
   const timeWindowDays = parseInt(els.timeWindow.value, 10);
   const location       = getLocation();
+  const languages      = [...state.selectedLanguages];
+  const outputLanguage = state.outputLanguage;
 
   state.isGenerating = true;
-  state.lastFormValues = { claudeKey, newsKey, proxyUrl, company, lenses, pageSize, timeWindowDays, location };
+  state.lastFormValues = { claudeKey, newsKey, proxyUrl, company, lenses, pageSize, timeWindowDays, location, languages, outputLanguage };
 
   // Disable generate button
   els.generateBtn.disabled = true;
   els.generateBtnText.textContent = 'Generating…';
 
   setReportState('loading');
-  showLoading(1, 'Querying NewsAPI for signals…');
+  const langLabel = languages.map(l => l.toUpperCase()).join('+');
+  showLoading(1, `Fetching signals in ${langLabel}…`);
 
   try {
-    // Phase 1: Fetch news signals
-    showLoading(1, `Fetching signals for ${lenses.join(', ')}…`);
-    let signalMap;
+    // Phase 1: Fetch company signals + PESTEL signals IN PARALLEL
+    let companySignals, signalMap;
     try {
-      signalMap = await fetchNewsSignals({
-        company, lenses, proxyUrl, newsApiKey: newsKey, pageSize, timeWindowDays, location,
-      });
-      state.lastSignalMap = signalMap;
+      [companySignals, signalMap] = await Promise.all([
+        fetchCompanySignals({ company, proxyUrl, newsApiKey: newsKey, pageSize, timeWindowDays, languages, location }),
+        fetchNewsSignals({ company, lenses, proxyUrl, newsApiKey: newsKey, pageSize, timeWindowDays, location, languages }),
+      ]);
+      state.lastCompanySignals = companySignals;
+      state.lastSignalMap      = signalMap;
     } catch (err) {
       if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
         throw new Error(`PROXY_OFFLINE:${proxyUrl}`);
@@ -315,7 +394,11 @@ async function generateReport() {
 
     // Phase 2: Synthesize with OpenAI
     showLoading(2, 'Sending signals to GPT-4o for synthesis…');
-    const report = await fetchStrategicInsights({ claudeKey, company, lenses, signalMap, location });
+    const report = await fetchStrategicInsights({
+      claudeKey, company, lenses, signalMap, location,
+      outputLanguage,
+      companySignals,
+    });
 
     // Phase 3: Render
     showLoading(3, 'Building report…');
@@ -323,7 +406,7 @@ async function generateReport() {
     // Small delay so phase 3 is visible
     await new Promise(r => setTimeout(r, 400));
 
-    renderReport(report, signalMap);
+    renderReport(report, signalMap, companySignals);
     setReportState('report');
 
   } catch (err) {
@@ -405,16 +488,54 @@ function formatTimestamp(iso) {
 function renderReportHeader(report) {
   els.reportCompanyName.textContent = report.company || '—';
 
-  // Lenses
   els.reportLensesDisplay.innerHTML = '';
   (report.lenses || []).forEach(lens => {
     els.reportLensesDisplay.appendChild(createLensBadge(lens));
   });
 
-  // Timestamp
   els.reportTimestamp.textContent = report.generatedAt
     ? formatTimestamp(report.generatedAt)
     : '';
+}
+
+// ─── Render Company Signal Layer (Layer 00) ──────────────────────────────────
+function renderCompanySignalLayer(articles) {
+  const container = els.companySignalContent;
+  if (!container) return;
+  container.innerHTML = '';
+
+  const cards = document.createElement('div');
+  cards.className = 'signal-cards';
+
+  if (!articles || articles.length === 0) {
+    const noData = document.createElement('div');
+    noData.className = 'signal-no-data';
+    noData.textContent = 'No company-specific signals retrieved';
+    cards.appendChild(noData);
+  } else {
+    articles.forEach(article => {
+      const card = document.createElement('div');
+      card.className = 'signal-card';
+      card.style.borderLeftColor = 'var(--text-accent)';
+
+      card.innerHTML = `
+        <div class="signal-headline">
+          <a href="${esc(article.url)}" target="_blank" rel="noopener noreferrer">
+            ${esc(article.headline)}
+          </a>
+        </div>
+        <div class="signal-meta">
+          <span class="signal-source">${esc(article.source)}</span>
+          <span>·</span>
+          <span>${esc(article.date)}</span>
+          ${article.language ? `<span>·</span><span class="lang-badge">${esc(article.language)}</span>` : ''}
+        </div>
+      `;
+      cards.appendChild(card);
+    });
+  }
+
+  container.appendChild(cards);
 }
 
 // ─── Render Signal Layer ─────────────────────────────────────────────────────
@@ -428,7 +549,6 @@ function renderSignalLayer(report, rawSignalMap) {
     const group = document.createElement('div');
     group.className = 'signal-lens-group';
 
-    // Lens label
     const label = document.createElement('div');
     label.className = 'signal-lens-label';
     const dot = document.createElement('span');
@@ -438,7 +558,6 @@ function renderSignalLayer(report, rawSignalMap) {
     label.appendChild(document.createTextNode(lens));
     group.appendChild(label);
 
-    // Articles — use raw signal map (actual fetched articles)
     const articles = (rawSignalMap && rawSignalMap[lens]) || [];
     const cards = document.createElement('div');
     cards.className = 'signal-cards';
@@ -464,6 +583,7 @@ function renderSignalLayer(report, rawSignalMap) {
             <span class="signal-source">${esc(article.source)}</span>
             <span>·</span>
             <span>${esc(article.date)}</span>
+            ${article.language ? `<span>·</span><span class="lang-badge">${esc(article.language)}</span>` : ''}
           </div>
         `;
         cards.appendChild(card);
@@ -681,7 +801,7 @@ async function openDeepDive(type, data) {
   if (!state.lastFormValues) return;
   if (state.deepDiveOpen) return;
 
-  const { claudeKey, company, lenses, location } = state.lastFormValues;
+  const { claudeKey, company, lenses, location, outputLanguage } = state.lastFormValues;
   const signalMap = state.lastSignalMap || {};
 
   // Set panel header
@@ -715,7 +835,10 @@ async function openDeepDive(type, data) {
   els.ddpBody.scrollTop = 0;
 
   try {
-    const report = await fetchDeepDive({ claudeKey, type, data, company, lenses, signalMap, location });
+    const report = await fetchDeepDive({
+      claudeKey, type, data, company, lenses, signalMap, location,
+      outputLanguage,
+    });
     renderDeepDiveReport(report, lenses);
     setPanelState('report');
   } catch (err) {
@@ -833,8 +956,9 @@ document.addEventListener('keydown', e => {
 });
 
 // ─── Main renderReport ───────────────────────────────────────────────────────
-function renderReport(report, rawSignalMap) {
+function renderReport(report, rawSignalMap, companySignals = []) {
   renderReportHeader(report);
+  renderCompanySignalLayer(companySignals);
   renderSignalLayer(report, rawSignalMap);
   renderInsightLayer(report);
   renderOutlookLayer(report);
@@ -857,6 +981,12 @@ updateOnlineStatus();
 function init() {
   loadSettings();
   setReportState('idle');
+
+  // Lock English language button (always active, not interactive)
+  document.querySelectorAll('.lang-btn[data-lang="en"]').forEach(btn => {
+    btn.classList.add('active', 'lang-btn--locked');
+    btn.setAttribute('aria-pressed', 'true');
+  });
 
   // Auto-open settings if keys are missing
   const { claudeKey, newsKey } = getSettings();
