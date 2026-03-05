@@ -1,11 +1,18 @@
 import express from 'express';
 import fetch from 'node-fetch';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 const NEWS_API_BASE = 'https://newsapi.org/v2/everything';
 
-// CORS headers for local dev
+// Serve frontend static files
+app.use(express.static(join(__dirname, 'public')));
+
+// CORS headers (kept for local dev / cross-origin API clients)
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-news-api-key');
@@ -55,7 +62,12 @@ app.get('/news', async (req, res) => {
 
 app.get('/health', (_req, res) => res.json({ status: 'ok', port: PORT }));
 
+// Fallback: serve index.html for any unmatched route (SPA support)
+app.get('*', (_req, res) => {
+  res.sendFile(join(__dirname, 'public', 'index.html'));
+});
+
 app.listen(PORT, () => {
-  console.log(`[SIE Proxy] Running on http://localhost:${PORT}`);
-  console.log(`[SIE Proxy] NEWS_API_KEY env: ${process.env.NEWS_API_KEY ? 'set' : 'not set (client must send header)'}`);
+  console.log(`[SIE] Running on http://localhost:${PORT}`);
+  console.log(`[SIE] NEWS_API_KEY env: ${process.env.NEWS_API_KEY ? 'set' : 'not set (client must send header)'}`);
 });
