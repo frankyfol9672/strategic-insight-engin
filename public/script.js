@@ -74,12 +74,6 @@ const els = {
   settingsToggle:   $('settings-toggle'),
   settingsPanel:    $('settings-panel'),
   settingsClose:    $('settings-close'),
-  settingsSave:     $('settings-save'),
-  settingsSavedMsg: $('settings-saved-msg'),
-  // Settings inputs
-  claudeKeyInput:  $('claude-key-input'),
-  newsKeyInput:    $('news-key-input'),
-  proxyUrlInput:   $('proxy-url-input'),
   // Form
   companyInput:    $('company-input'),
   pestelBtns:      document.querySelectorAll('.pestel-btn'),
@@ -141,17 +135,10 @@ const els = {
 
 // ─── LocalStorage Helpers ────────────────────────────────────────────────────
 const LS_KEYS = {
-  claudeKey:      'sie_claude_key',
-  newsKey:        'sie_news_key',
-  proxyUrl:       'sie_proxy_url',
   outputLanguage: 'sie_output_language',
 };
 
 function loadSettings() {
-  els.claudeKeyInput.value = localStorage.getItem(LS_KEYS.claudeKey) || '';
-  els.newsKeyInput.value   = localStorage.getItem(LS_KEYS.newsKey)   || '';
-  els.proxyUrlInput.value  = localStorage.getItem(LS_KEYS.proxyUrl)  || 'http://localhost:3001';
-
   const savedOutputLang = localStorage.getItem(LS_KEYS.outputLanguage);
   if (savedOutputLang && els.outputLangSelect) {
     els.outputLangSelect.value = savedOutputLang;
@@ -160,17 +147,7 @@ function loadSettings() {
 }
 
 function saveSettings() {
-  localStorage.setItem(LS_KEYS.claudeKey, els.claudeKeyInput.value.trim());
-  localStorage.setItem(LS_KEYS.newsKey,   els.newsKeyInput.value.trim());
-  localStorage.setItem(LS_KEYS.proxyUrl,  els.proxyUrlInput.value.trim() || 'http://localhost:3001');
-}
-
-function getSettings() {
-  return {
-    claudeKey: localStorage.getItem(LS_KEYS.claudeKey) || '',
-    newsKey:   localStorage.getItem(LS_KEYS.newsKey)   || '',
-    proxyUrl:  localStorage.getItem(LS_KEYS.proxyUrl)  || 'http://localhost:3001',
-  };
+  // No client-side keys to save — all keys are server-side env vars
 }
 
 // ─── Settings Panel ──────────────────────────────────────────────────────────
@@ -191,12 +168,6 @@ function toggleSettings() {
 
 els.settingsToggle.addEventListener('click', toggleSettings);
 els.settingsClose.addEventListener('click', closeSettings);
-
-els.settingsSave.addEventListener('click', () => {
-  saveSettings();
-  els.settingsSavedMsg.classList.remove('hidden');
-  setTimeout(() => els.settingsSavedMsg.classList.add('hidden'), 2000);
-});
 
 // ─── Location Filter ─────────────────────────────────────────────────────────
 els.locationRegion.addEventListener('change', () => {
@@ -320,14 +291,7 @@ function setReportState(reportState) {
 
 // ─── Form Validation ─────────────────────────────────────────────────────────
 function validateForm() {
-  const { claudeKey, newsKey } = getSettings();
   const company = els.companyInput.value.trim();
-
-  if (!claudeKey || !newsKey) {
-    showError('API keys are missing. Please open Settings and enter your OpenAI and NewsAPI keys.');
-    openSettings();
-    return false;
-  }
 
   if (!company) {
     showError('Please enter a company or organization name.');
@@ -355,7 +319,6 @@ async function generateReport() {
     return;
   }
 
-  const { claudeKey, newsKey, proxyUrl } = getSettings();
   const company        = els.companyInput.value.trim();
   const lenses         = [...state.selectedLenses];
   const pageSize       = parseInt(els.articlesPerLens.value, 10);
@@ -365,7 +328,7 @@ async function generateReport() {
   const outputLanguage = state.outputLanguage;
 
   state.isGenerating = true;
-  state.lastFormValues = { claudeKey, newsKey, proxyUrl, company, lenses, pageSize, timeWindowDays, location, languages, outputLanguage };
+  state.lastFormValues = { company, lenses, pageSize, timeWindowDays, location, languages, outputLanguage };
 
   // Disable generate button
   els.generateBtn.disabled = true;
@@ -380,30 +343,28 @@ async function generateReport() {
     let companySignals, signalMap;
     try {
       [companySignals, signalMap] = await Promise.all([
-        fetchCompanySignals({ company, proxyUrl, newsApiKey: newsKey, pageSize, timeWindowDays, languages, location }),
-        fetchNewsSignals({ company, lenses, proxyUrl, newsApiKey: newsKey, pageSize, timeWindowDays, location, languages }),
+        fetchCompanySignals({ company, pageSize, timeWindowDays, languages, location }),
+        fetchNewsSignals({ company, lenses, pageSize, timeWindowDays, location, languages }),
       ]);
       state.lastCompanySignals = companySignals;
       state.lastSignalMap      = signalMap;
     } catch (err) {
       if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
-        throw new Error(`PROXY_OFFLINE:${proxyUrl}`);
+        throw new Error('PROXY_OFFLINE');
       }
       throw err;
     }
 
-    // Phase 2: Synthesize with OpenAI
+    // Phase 2: Synthesize with OpenAI (server-side)
     showLoading(2, 'Sending signals to GPT-4o for synthesis…');
     const report = await fetchStrategicInsights({
-      claudeKey, company, lenses, signalMap, location,
+      company, lenses, signalMap, location,
       outputLanguage,
       companySignals,
     });
 
     // Phase 3: Render
     showLoading(3, 'Building report…');
-
-    // Small delay so phase 3 is visible
     await new Promise(r => setTimeout(r, 400));
 
     renderReport(report, signalMap, companySignals);
@@ -411,7 +372,7 @@ async function generateReport() {
 
   } catch (err) {
     setReportState('idle');
-    handleFetchError(err, proxyUrl);
+    handleFetchError(err);
   } finally {
     state.isGenerating = false;
     els.generateBtn.disabled = false;
@@ -419,20 +380,19 @@ async function generateReport() {
   }
 }
 
-function handleFetchError(err, proxyUrl) {
+function handleFetchError(err) {
   const msg = err.message || '';
 
   if (msg === 'CLAUDE_401') {
-    showError('Invalid OpenAI API key. Please check your key in Settings.');
-    openSettings();
+    showError('OpenAI API key error. Please contact the site administrator.');
     return;
   }
   if (msg === 'CLAUDE_429') {
     showError('OpenAI rate limit reached. Please wait 60 seconds and try again.');
     return;
   }
-  if (msg.startsWith('PROXY_OFFLINE')) {
-    showError(`Cannot reach the local proxy at ${proxyUrl}. Make sure the server is running: node server.js`);
+  if (msg === 'PROXY_OFFLINE') {
+    showError('Cannot reach the server. Please try again in a moment.');
     return;
   }
 
@@ -801,7 +761,7 @@ async function openDeepDive(type, data) {
   if (!state.lastFormValues) return;
   if (state.deepDiveOpen) return;
 
-  const { claudeKey, company, lenses, location, outputLanguage } = state.lastFormValues;
+  const { company, lenses, location, outputLanguage } = state.lastFormValues;
   const signalMap = state.lastSignalMap || {};
 
   // Set panel header
@@ -836,7 +796,7 @@ async function openDeepDive(type, data) {
 
   try {
     const report = await fetchDeepDive({
-      claudeKey, type, data, company, lenses, signalMap, location,
+      type, data, company, lenses, signalMap, location,
       outputLanguage,
     });
     renderDeepDiveReport(report, lenses);
@@ -987,12 +947,6 @@ function init() {
     btn.classList.add('active', 'lang-btn--locked');
     btn.setAttribute('aria-pressed', 'true');
   });
-
-  // Auto-open settings if keys are missing
-  const { claudeKey, newsKey } = getSettings();
-  if (!claudeKey || !newsKey) {
-    openSettings();
-  }
 
   // Enter key on company input triggers generate
   els.companyInput.addEventListener('keydown', e => {

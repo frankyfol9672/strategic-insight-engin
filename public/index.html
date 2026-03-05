@@ -55,54 +55,16 @@
 
       <div class="settings-grid">
         <div class="settings-field">
-          <label for="claude-key-input" class="settings-label">
-            OpenAI API Key
-            <span class="settings-hint">Sent directly to OpenAI from your browser</span>
+          <label class="settings-label">
+            API Keys
+            <span class="settings-hint">Secured server-side — no configuration needed</span>
           </label>
-          <input
-            type="password"
-            id="claude-key-input"
-            class="settings-input"
-            placeholder="sk-..."
-            autocomplete="off"
-            spellcheck="false"
-          />
-        </div>
-
-        <div class="settings-field">
-          <label for="news-key-input" class="settings-label">
-            NewsAPI Key
-            <span class="settings-hint">Forwarded to local proxy server</span>
-          </label>
-          <input
-            type="password"
-            id="news-key-input"
-            class="settings-input"
-            placeholder="your-newsapi-key"
-            autocomplete="off"
-            spellcheck="false"
-          />
-        </div>
-
-        <div class="settings-field">
-          <label for="proxy-url-input" class="settings-label">
-            Proxy URL
-            <span class="settings-hint">Local Express server for NewsAPI</span>
-          </label>
-          <input
-            type="text"
-            id="proxy-url-input"
-            class="settings-input"
-            placeholder="http://localhost:3001"
-            autocomplete="off"
-            spellcheck="false"
-          />
+          <div class="settings-keys-note mono">// Keys configured on server</div>
         </div>
       </div>
 
       <div class="settings-footer">
-        <button id="settings-save" class="btn btn-primary">Save Settings</button>
-        <span id="settings-saved-msg" class="settings-saved-msg hidden">✓ Saved</span>
+        <span class="settings-hint">Settings are applied automatically</span>
       </div>
     </div>
   </section>

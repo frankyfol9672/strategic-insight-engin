@@ -259,6 +259,15 @@ body {
   gap: 12px;
 }
 
+.settings-keys-note {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 8px 12px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
 .settings-saved-msg {
   font-size: 0.8125rem;
   color: var(--color-success);

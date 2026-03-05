@@ -1,6 +1,6 @@
 /**
  * api.js — Strategic Insight Engine
- * NewsAPI proxy calls + OpenAI API calls
+ * All API calls go through the server proxy — no keys in the browser.
  */
 
 // ─── Lens → search query keywords ───────────────────────────────────────────
@@ -13,13 +13,6 @@ const LENS_KEYWORDS = {
   Legal:         'lawsuit OR litigation OR compliance OR regulatory OR court OR antitrust OR legal',
 };
 
-/**
- * Build a NewsAPI query string for a company + PESTEL lens + optional location.
- * @param {string} company
- * @param {string} lens
- * @param {string} [location]  — 'Global', region name, or country name
- * @returns {string}
- */
 export function buildNewsQuery(company, lens, location) {
   const keywords = LENS_KEYWORDS[lens] || lens.toLowerCase();
   const base = `"${company}" AND (${keywords})`;
@@ -27,52 +20,26 @@ export function buildNewsQuery(company, lens, location) {
   return `${base} AND "${location}"`;
 }
 
-/**
- * Build a company-focused NewsAPI query (no PESTEL keywords).
- * @param {string} company
- * @param {string} [location]
- * @returns {string}
- */
 export function buildCompanyQuery(company, location) {
   const base = `"${company}"`;
   if (!location || location === 'Global') return base;
   return `${base} AND "${location}"`;
 }
 
-/**
- * Calculate the ISO date string N days ago.
- * @param {number} days
- * @returns {string}
- */
 function daysAgoISO(days) {
   const d = new Date();
   d.setDate(d.getDate() - days);
   return d.toISOString().split('T')[0];
 }
 
-/**
- * Fetch news articles for a single lens + language via the local proxy.
- * @param {object} opts
- * @param {string} opts.company
- * @param {string} opts.lens
- * @param {string} opts.proxyUrl
- * @param {string} opts.newsApiKey
- * @param {number} opts.pageSize
- * @param {number} opts.timeWindowDays
- * @param {string} [opts.location]
- * @param {string} [opts.language]  — NewsAPI language code (default 'en')
- * @returns {Promise<Array<{headline, source, date, url, lens, language}>>}
- */
-export async function fetchLensSignals({ company, lens, proxyUrl, newsApiKey, pageSize, timeWindowDays, location, language = 'en' }) {
+// ─── NewsAPI (via server proxy) ───────────────────────────────────────────────
+
+export async function fetchLensSignals({ company, lens, pageSize, timeWindowDays, location, language = 'en' }) {
   const q = buildNewsQuery(company, lens, location);
   const from = daysAgoISO(timeWindowDays);
 
   const params = new URLSearchParams({ q, from, pageSize, language, sortBy: 'relevancy' });
-  const url = `${proxyUrl}/news?${params}`;
-
-  const resp = await fetch(url, {
-    headers: { 'x-news-api-key': newsApiKey },
-  });
+  const resp = await fetch(`/news?${params}`);
 
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
@@ -80,9 +47,7 @@ export async function fetchLensSignals({ company, lens, proxyUrl, newsApiKey, pa
   }
 
   const data = await resp.json();
-  const articles = (data.articles || []).slice(0, pageSize);
-
-  return articles.map(a => ({
+  return (data.articles || []).slice(0, pageSize).map(a => ({
     lens,
     headline: a.title || '(no title)',
     source:   a.source?.name || 'Unknown',
@@ -92,27 +57,16 @@ export async function fetchLensSignals({ company, lens, proxyUrl, newsApiKey, pa
   }));
 }
 
-/**
- * Fetch signals for all selected lenses in parallel, across all selected languages.
- * Deduplicates articles by URL within each lens.
- * @param {object} opts
- * @param {string[]} [opts.languages]  — array of NewsAPI language codes, defaults to ['en']
- * @returns {Promise<Record<string, Array>>}  { Political: [...], Economic: [...] }
- */
-export async function fetchNewsSignals({ company, lenses, proxyUrl, newsApiKey, pageSize, timeWindowDays, location, languages = ['en'] }) {
-  // Build one task per (lens × language) pair
+export async function fetchNewsSignals({ company, lenses, pageSize, timeWindowDays, location, languages = ['en'] }) {
   const tasks = [];
-  lenses.forEach(lens => {
-    languages.forEach(lang => tasks.push({ lens, lang }));
-  });
+  lenses.forEach(lens => languages.forEach(lang => tasks.push({ lens, lang })));
 
   const results = await Promise.allSettled(
     tasks.map(({ lens, lang }) =>
-      fetchLensSignals({ company, lens, proxyUrl, newsApiKey, pageSize, timeWindowDays, location, language: lang })
+      fetchLensSignals({ company, lens, pageSize, timeWindowDays, location, language: lang })
     )
   );
 
-  // Merge results per lens
   const signalMap = {};
   lenses.forEach(l => { signalMap[l] = []; });
 
@@ -121,11 +75,10 @@ export async function fetchNewsSignals({ company, lenses, proxyUrl, newsApiKey, 
     if (result.status === 'fulfilled') {
       signalMap[lens].push(...result.value);
     } else {
-      console.warn(`Failed to fetch signals for lens "${tasks[i].lens}" lang "${tasks[i].lang}":`, result.reason?.message);
+      console.warn(`Failed signals for "${tasks[i].lens}" [${tasks[i].lang}]:`, result.reason?.message);
     }
   });
 
-  // Deduplicate by URL within each lens (first occurrence wins)
   lenses.forEach(lens => {
     const seen = new Set();
     signalMap[lens] = signalMap[lens].filter(a => {
@@ -138,34 +91,16 @@ export async function fetchNewsSignals({ company, lenses, proxyUrl, newsApiKey, 
   return signalMap;
 }
 
-/**
- * Fetch company-specific news (no PESTEL keywords) across all selected languages.
- * Deduplicates by URL. Returns a flat array.
- * @param {object} opts
- * @param {string} opts.company
- * @param {string} opts.proxyUrl
- * @param {string} opts.newsApiKey
- * @param {number} opts.pageSize
- * @param {number} opts.timeWindowDays
- * @param {string[]} [opts.languages]
- * @param {string} [opts.location]
- * @returns {Promise<Array<{headline, source, date, url, language}>>}
- */
-export async function fetchCompanySignals({ company, proxyUrl, newsApiKey, pageSize, timeWindowDays, languages = ['en'], location }) {
+export async function fetchCompanySignals({ company, pageSize, timeWindowDays, languages = ['en'], location }) {
   const q    = buildCompanyQuery(company, location);
   const from = daysAgoISO(timeWindowDays);
 
   const results = await Promise.allSettled(
     languages.map(lang => {
       const params = new URLSearchParams({ q, from, pageSize, language: lang, sortBy: 'relevancy' });
-      const url    = `${proxyUrl}/news?${params}`;
-      return fetch(url, { headers: { 'x-news-api-key': newsApiKey } })
+      return fetch(`/news?${params}`)
         .then(resp => {
-          if (!resp.ok) {
-            return resp.json().catch(() => ({})).then(body => {
-              throw new Error(body.error || `NewsAPI proxy returned ${resp.status}`);
-            });
-          }
+          if (!resp.ok) return resp.json().catch(() => ({})).then(body => { throw new Error(body.error || `NewsAPI proxy returned ${resp.status}`); });
           return resp.json();
         })
         .then(data =>
@@ -183,10 +118,9 @@ export async function fetchCompanySignals({ company, proxyUrl, newsApiKey, pageS
   const all = [];
   results.forEach(r => {
     if (r.status === 'fulfilled') all.push(...r.value);
-    else console.warn('fetchCompanySignals language call failed:', r.reason?.message);
+    else console.warn('fetchCompanySignals call failed:', r.reason?.message);
   });
 
-  // Deduplicate by URL
   const seen = new Set();
   return all.filter(a => {
     if (seen.has(a.url)) return false;
@@ -195,10 +129,7 @@ export async function fetchCompanySignals({ company, proxyUrl, newsApiKey, pageS
   });
 }
 
-// ─── OpenAI API ─────────────────────────────────────────────────────────────
-
-const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
-const OPENAI_MODEL   = 'gpt-4o';
+// ─── OpenAI (via server proxy at /ai) ────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are a senior strategic analyst. Your task is to analyze news signals through PESTEL lenses and produce a structured strategic intelligence report.
 
@@ -211,17 +142,6 @@ CRITICAL RULES:
 6. Base your analysis strictly on the provided signals. Do not hallucinate facts.
 7. generatedAt must be a valid ISO 8601 timestamp.`;
 
-/**
- * Build the user prompt from company, lenses, signals, optional location,
- * output language, and company signals.
- * @param {string} company
- * @param {string[]} lenses
- * @param {Record<string, Array>} signalMap
- * @param {string} [location]
- * @param {string} [outputLanguage]
- * @param {Array}  [companySignals]
- * @returns {string}
- */
 function buildUserPrompt(company, lenses, signalMap, location, outputLanguage = 'English', companySignals = []) {
   const locationContext = location && location !== 'Global'
     ? `Geographic focus: ${location}`
@@ -229,7 +149,6 @@ function buildUserPrompt(company, lenses, signalMap, location, outputLanguage = 
 
   const outputLangLine = `Output language: ${outputLanguage}. Respond entirely in ${outputLanguage}.`;
 
-  // Company signals section (inserted before PESTEL signals)
   let companySignalSection = '';
   if (companySignals.length > 0) {
     const lines = companySignals
@@ -288,74 +207,53 @@ ${companySignalSection}${signalSummary}
 Produce 3–5 insight cards. Each card must span at least 2 lenses where signals exist. Respond ONLY with the JSON object above — no other text.`;
 }
 
-/**
- * Call OpenAI API and return the parsed JSON report.
- * @param {object} opts
- * @param {string} opts.claudeKey       — OpenAI API key
- * @param {string} opts.company
- * @param {string[]} opts.lenses
- * @param {Record<string, Array>} opts.signalMap
- * @param {string} [opts.location]
- * @param {string} [opts.outputLanguage]
- * @param {Array}  [opts.companySignals]
- * @returns {Promise<object>}
- */
-export async function fetchStrategicInsights({ claudeKey, company, lenses, signalMap, location, outputLanguage = 'English', companySignals = [] }) {
-  const userPrompt = buildUserPrompt(company, lenses, signalMap, location, outputLanguage, companySignals);
-
-  const body = {
-    model: OPENAI_MODEL,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user',   content: userPrompt },
-    ],
-  };
-
-  const resp = await fetch(OPENAI_API_URL, {
+async function callAI(messages) {
+  const resp = await fetch('/ai', {
     method: 'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${claudeKey}`,
-    },
-    body: JSON.stringify(body),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages, response_format: { type: 'json_object' } }),
   });
 
   if (resp.status === 401) throw new Error('CLAUDE_401');
   if (resp.status === 429) throw new Error('CLAUDE_429');
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
-    throw new Error(`OpenAI API error ${resp.status}: ${err.error?.message || 'unknown'}`);
+    throw new Error(`OpenAI API error ${resp.status}: ${err.error || 'unknown'}`);
   }
 
   const data = await resp.json();
-  const rawText = data.choices?.[0]?.message?.content || '';
-
-  return parseClaudeResponse(rawText, { claudeKey, company, lenses, signalMap, location, outputLanguage, companySignals });
+  return data.choices?.[0]?.message?.content || '';
 }
 
-/**
- * Parse OpenAI response into JSON. Retries once with stricter prompt.
- */
-export async function parseClaudeResponse(rawText, retryOpts, isRetry = false) {
-  let cleaned = rawText.trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '');
-  cleaned = cleaned.trim();
+export async function fetchStrategicInsights({ company, lenses, signalMap, location, outputLanguage = 'English', companySignals = [] }) {
+  const userPrompt = buildUserPrompt(company, lenses, signalMap, location, outputLanguage, companySignals);
+  const messages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user',   content: userPrompt },
+  ];
+
+  const rawText = await callAI(messages);
+  return parseAIResponse(rawText, { company, lenses, signalMap, location, outputLanguage, companySignals });
+}
+
+export async function parseAIResponse(rawText, retryOpts, isRetry = false) {
+  let cleaned = rawText.trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/, '')
+    .trim();
 
   const start = cleaned.indexOf('{');
   const end   = cleaned.lastIndexOf('}');
-  if (start !== -1 && end !== -1) {
-    cleaned = cleaned.slice(start, end + 1);
-  }
+  if (start !== -1 && end !== -1) cleaned = cleaned.slice(start, end + 1);
 
   try {
     return JSON.parse(cleaned);
   } catch (parseErr) {
     if (!isRetry) {
-      console.warn('OpenAI returned non-JSON, retrying…', parseErr.message);
+      console.warn('AI returned non-JSON, retrying…', parseErr.message);
       return retryWithStricterPrompt(retryOpts);
     }
-    console.error('JSON parse failed after retry. Returning raw output.');
+    console.error('JSON parse failed after retry.');
     return {
       _parseError: true,
       _rawText:    rawText,
@@ -366,36 +264,18 @@ export async function parseClaudeResponse(rawText, retryOpts, isRetry = false) {
   }
 }
 
-async function retryWithStricterPrompt({ claudeKey, company, lenses, signalMap, location, outputLanguage = 'English', companySignals = [] }) {
+async function retryWithStricterPrompt({ company, lenses, signalMap, location, outputLanguage = 'English', companySignals = [] }) {
   const userPrompt = buildUserPrompt(company, lenses, signalMap, location, outputLanguage, companySignals);
+  const messages = [
+    { role: 'system', content: SYSTEM_PROMPT + '\n\nIMPERATIVE: Output MUST be a single valid JSON object only.' },
+    { role: 'user',   content: userPrompt },
+  ];
 
-  const body = {
-    model: OPENAI_MODEL,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT + '\n\nIMPERATIVE: Output MUST be a single valid JSON object only.' },
-      { role: 'user',   content: userPrompt },
-    ],
-  };
-
-  const resp = await fetch(OPENAI_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${claudeKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!resp.ok) throw new Error(`OpenAI retry failed: ${resp.status}`);
-
-  const data    = await resp.json();
-  const rawText = data.choices?.[0]?.message?.content || '';
-
-  return parseClaudeResponse(rawText, { claudeKey, company, lenses, signalMap, location, outputLanguage, companySignals }, true);
+  const rawText = await callAI(messages);
+  return parseAIResponse(rawText, { company, lenses, signalMap, location, outputLanguage, companySignals }, true);
 }
 
-// ─── Deep Dive API ──────────────────────────────────────────────────────────
+// ─── Deep Dive (via server proxy) ────────────────────────────────────────────
 
 const DEEP_DIVE_SYSTEM_PROMPT = `You are a senior market intelligence analyst authoring an industry white paper.
 Your task is to produce a structured analytical report in JSON format.
@@ -414,17 +294,6 @@ CRITICAL RULES:
 11. Base all analysis strictly on the provided data and signals. Do not fabricate facts.
 12. generatedAt must be a valid ISO 8601 timestamp.`;
 
-/**
- * Build the deep dive user prompt.
- * @param {'insight'|'outlook'} type
- * @param {object} data  — insight card or outlookLayer object
- * @param {string} company
- * @param {string[]} lenses
- * @param {Record<string, Array>} signalMap
- * @param {string} [location]
- * @param {string} [outputLanguage]
- * @returns {string}
- */
 function buildDeepDivePrompt(type, data, company, lenses, signalMap, location, outputLanguage = 'English') {
   const locationContext = location && location !== 'Global'
     ? `Geographic focus: ${location}`
@@ -434,9 +303,7 @@ function buildDeepDivePrompt(type, data, company, lenses, signalMap, location, o
 
   const signalSummary = lenses.map(lens => {
     const articles = signalMap[lens] || [];
-    if (articles.length === 0) {
-      return `## ${lens} Lens\n(No signals retrieved)`;
-    }
+    if (articles.length === 0) return `## ${lens} Lens\n(No signals retrieved)`;
     const lines = articles.map((a, i) => `  ${i + 1}. [${a.source}] ${a.headline} (${a.date}) [${a.language || 'EN'}]`).join('\n');
     return `## ${lens} Lens\n${lines}`;
   }).join('\n\n');
@@ -444,9 +311,8 @@ function buildDeepDivePrompt(type, data, company, lenses, signalMap, location, o
   const lensKeysNote = `The situationAnalysis object MUST contain exactly these keys: ${lenses.join(', ')}`;
   const subtitleLocation = location && location !== 'Global' ? ` | ${location}` : '';
 
-  let sourceBlock;
-  if (type === 'insight') {
-    sourceBlock = `=== INSIGHT TO ANALYSE ===
+  const sourceBlock = type === 'insight'
+    ? `=== INSIGHT TO ANALYSE ===
 ID: ${data.id}
 Title: ${data.title}
 Lenses: ${(data.lenses || []).join(', ')}
@@ -454,15 +320,13 @@ Observation: ${data.observation}
 Mechanism: ${data.mechanism}
 Implication: ${data.implication}
 Confidence: ${data.confidence}%
-Watchpoint: ${data.watchpoint}`;
-  } else {
-    sourceBlock = `=== OUTLOOK SCENARIOS TO ANALYSE ===
+Watchpoint: ${data.watchpoint}`
+    : `=== OUTLOOK SCENARIOS TO ANALYSE ===
 Bear Case: ${data.bearCase}
 Base Case: ${data.baseCase}
 Bull Case: ${data.bullCase}
 Primary Risk: ${data.primaryRisk}
 Strategic Recommendation: ${data.strategicRecommendation}`;
-  }
 
   const focus = type === 'insight'
     ? `the market intelligence insight "${data.title}" as it relates to ${company}`
@@ -493,16 +357,16 @@ ${sourceBlock}
   ],
   "marketImplications": [
     {
-      "theme": "<implication theme title — e.g. 'Competitive Pressure', 'Regulatory Exposure', 'Demand Shift'>",
-      "analysis": "<2-3 sentences: what this dynamic implies for ${company}'s market position, operating environment, or competitive landscape — analytical, not directive>"
+      "theme": "<implication theme title>",
+      "analysis": "<2-3 sentences: analytical implication for ${company}>"
     }
   ],
   "signalStrength": {
     "assessment": "<exactly one of: Strong | Moderate | Emerging>",
-    "rationale": "<2-3 sentences: explain the evidential basis, consistency across sources, and confidence level of these signals>"
+    "rationale": "<2-3 sentences explaining evidential basis>"
   },
   "watchlist": [
-    "<forward-looking signal or development to monitor — specific and observable>",
+    "<forward-looking signal to monitor>",
     "<watchlist item 2>"
   ]
 }
@@ -511,65 +375,23 @@ ${lensKeysNote}
 Respond ONLY with the JSON object above — no other text.`;
 }
 
-/**
- * Parse deep dive response — strip fences, parse JSON, throw on failure.
- */
-function parseDeepDiveResponse(rawText) {
-  let cleaned = rawText.trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+export async function fetchDeepDive({ type, data, company, lenses, signalMap, location, outputLanguage = 'English' }) {
+  const userPrompt = buildDeepDivePrompt(type, data, company, lenses, signalMap, location, outputLanguage);
+  const messages = [
+    { role: 'system', content: DEEP_DIVE_SYSTEM_PROMPT },
+    { role: 'user',   content: userPrompt },
+  ];
+
+  const rawText = await callAI(messages);
+
+  let cleaned = rawText.trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/, '')
+    .trim();
 
   const start = cleaned.indexOf('{');
   const end   = cleaned.lastIndexOf('}');
-  if (start !== -1 && end !== -1) {
-    cleaned = cleaned.slice(start, end + 1);
-  }
+  if (start !== -1 && end !== -1) cleaned = cleaned.slice(start, end + 1);
 
   return JSON.parse(cleaned);
-}
-
-/**
- * Fetch a market intelligence white paper for an insight or the outlook section.
- * @param {object} opts
- * @param {string} opts.claudeKey         — OpenAI API key
- * @param {'insight'|'outlook'} opts.type
- * @param {object} opts.data              — insight card OR outlookLayer object
- * @param {string} opts.company
- * @param {string[]} opts.lenses
- * @param {Record<string, Array>} opts.signalMap
- * @param {string} [opts.location]
- * @param {string} [opts.outputLanguage]
- * @returns {Promise<object>}
- */
-export async function fetchDeepDive({ claudeKey, type, data, company, lenses, signalMap, location, outputLanguage = 'English' }) {
-  const userPrompt = buildDeepDivePrompt(type, data, company, lenses, signalMap, location, outputLanguage);
-
-  const body = {
-    model: OPENAI_MODEL,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: DEEP_DIVE_SYSTEM_PROMPT },
-      { role: 'user',   content: userPrompt },
-    ],
-  };
-
-  const resp = await fetch(OPENAI_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${claudeKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (resp.status === 401) throw new Error('CLAUDE_401');
-  if (resp.status === 429) throw new Error('CLAUDE_429');
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    throw new Error(`OpenAI API error ${resp.status}: ${err.error?.message || 'unknown'}`);
-  }
-
-  const responseData = await resp.json();
-  const rawText      = responseData.choices?.[0]?.message?.content || '';
-
-  return parseDeepDiveResponse(rawText);
 }
