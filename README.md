@@ -1,6 +1,6 @@
 # Strategic Insight Engine
 
-A stateless single-page web app that acts as an AI-powered strategic analyst. Enter a company name, select PESTEL lenses and a geographic focus, and get a structured three-layer intelligence report — plus the ability to deep dive into any insight with a full market intelligence white paper.
+A single-page web app that acts as an AI-powered strategic analyst. Enter a company name, select PESTEL lenses and a geographic focus, and get a structured three-layer intelligence report — plus the ability to deep dive into any insight with a full market intelligence white paper.
 
 ![Report layers: Signal → Insight → Outlook](https://img.shields.io/badge/layers-Signal%20→%20Insight%20→%20Outlook-60a5fa?style=flat-square)
 ![Powered by GPT-4o](https://img.shields.io/badge/AI-GPT--4o-10a37f?style=flat-square)
@@ -10,13 +10,16 @@ A stateless single-page web app that acts as an AI-powered strategic analyst. En
 
 ## Features
 
+- **Company Signals (Layer 00)** — company-specific news fetched separately to ground PESTEL insights
 - **PESTEL analysis** — choose 1–3 lenses (Political, Economic, Social, Technological, Environmental, Legal)
+- **Multi-language research** — fetch signals in up to 5 languages simultaneously; auto-suggests languages based on selected region
+- **Report output language** — generate the full report in English, French, Spanish, German, and more
 - **Location filter** — narrow from Global → Region → Country
 - **3-layer report**
-  - **Signal Layer** — real news articles fetched per lens
+  - **Signal Layer** — real news articles fetched per lens with language badges
   - **Insight Layer** — 3–5 cross-lens insight cards with Observation / Mechanism / Implication / Confidence / Watchpoint
   - **Outlook Layer** — Bear / Base / Bull scenario analysis
-- **Deep Dive panel** — click any insight or the Outlook section to get a full market intelligence white paper (Executive Summary, Situation Analysis, Key Findings, Market Implications, Signal Strength, Watchlist)
+- **Deep Dive panel** — full market intelligence white paper per insight or outlook section
 - **Dark terminal theme** — Bloomberg/terminal aesthetic
 
 ---
@@ -29,14 +32,16 @@ A stateless single-page web app that acts as an AI-powered strategic analyst. En
 
 ---
 
-## Setup
+## Local setup
 
-**1. Clone the repo**
+**1. Clone the repo and enter the project folder**
 
 ```bash
 git clone https://github.com/frankyfol9672/strategic-insight-engin.git
 cd strategic-insight-engin
 ```
+
+> All commands from this point must be run from inside the `strategic-insight-engin` folder.
 
 **2. Install dependencies**
 
@@ -44,98 +49,84 @@ cd strategic-insight-engin
 npm install
 ```
 
-**3. Start the NewsAPI proxy**
+**3. Set your API keys**
 
-The proxy runs on `localhost:3001` and adds your NewsAPI key server-side to bypass CORS.
+Create a `.env` file in the project root (this file is git-ignored):
+
+```bash
+OPENAI_API_KEY=sk-...your-openai-key...
+NEWS_API_KEY=your-newsapi-key
+```
+
+Or export them inline when starting the server (step 4).
+
+**4. Start the server**
 
 ```bash
 node server.js
 ```
 
 You should see:
+
 ```
-[SIE Proxy] Running on http://localhost:3001
-```
-
-**4. Serve the frontend**
-
-In a second terminal:
-
-```bash
-npx serve .
+[SIE] Running on http://localhost:3001
+[SIE] OPENAI_API_KEY : set
+[SIE] NEWS_API_KEY   : set
 ```
 
-Open **http://localhost:3000** in your browser.
+**5. Open the app**
+
+Open **http://localhost:3001** in your browser.
+
+That's it — there is no second terminal or separate frontend step. The Express server serves the app and handles all API calls.
 
 ---
 
-## API Keys
+## Architecture
 
-Keys are stored in your browser's `localStorage` — they never leave your machine except to call the respective APIs directly.
-
-On first load, the Settings panel opens automatically. Enter:
-
-| Field | Where to get it |
-|---|---|
-| **OpenAI API Key** | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) — starts with `sk-...` |
-| **NewsAPI Key** | [newsapi.org/register](https://newsapi.org/register) — free, instant |
-| **Proxy URL** | Leave as `http://localhost:3001` (default) |
-
-Click **Save Settings**.
-
-> **Note:** NewsAPI free tier only works from `localhost`. The local proxy handles this — do not call NewsAPI directly from the browser.
-
----
-
-## Usage
-
-1. Enter a **company name** (e.g. Tesla, Apple, Volkswagen)
-2. Select **1–3 PESTEL lenses**
-3. Optionally narrow the **location** (e.g. Europe → Germany)
-4. Set **articles per lens** and **time window**
-5. Click **Generate Report**
-6. Click **Deep Dive →** on any insight card or the Outlook section for a full white paper
-
----
-
-## Project Structure
+All API keys live on the server and are never sent to the browser.
 
 ```
-strategic-insight-engine/
-├── index.html      — Full page markup and element IDs
-├── style.css       — Dark terminal theme with CSS design tokens
-├── api.js          — ES module: NewsAPI + OpenAI API calls, prompt builders
-├── script.js       — ES module: UI logic, state, orchestration, rendering
-├── server.js       — Express proxy for NewsAPI (bypasses CORS)
-└── package.json    — express + node-fetch dependencies
-```
-
-### Architecture
-
-```
-Browser
-  ├── OpenAI (GPT-4o) ──────────── called directly (CORS supported)
-  └── NewsAPI proxy (localhost:3001)
-        └── newsapi.org ─────────── API key added server-side
+Browser  →  Express server (localhost:3001)
+                ├── GET  /          → serves public/index.html
+                ├── GET  /news      → proxies NewsAPI (uses NEWS_API_KEY)
+                └── POST /ai        → proxies OpenAI  (uses OPENAI_API_KEY)
 ```
 
 ---
 
-## Environment Variables
+## Project structure
 
-Optionally set the NewsAPI key as an environment variable so teammates don't need to enter it manually:
-
-```bash
-NEWS_API_KEY=your_key_here node server.js
+```
+strategic-insight-engin/
+├── public/
+│   ├── index.html   — page markup
+│   ├── style.css    — dark terminal theme
+│   ├── api.js       — all API calls (hits /news and /ai on this server)
+│   └── script.js    — UI logic, state, rendering
+├── server.js        — Express server: static files + API proxies
+└── package.json
 ```
 
-If set, the proxy uses this key and ignores the client-supplied header.
+---
+
+## Deploying to Render
+
+1. Push your repo to GitHub
+2. Go to [render.com](https://render.com) → **New Web Service** → connect your repo
+3. Set:
+   - **Build command:** `npm install`
+   - **Start command:** `node server.js`
+4. Add environment variables in the Render dashboard:
+   - `OPENAI_API_KEY` — your OpenAI key
+   - `NEWS_API_KEY` — your NewsAPI key
+5. Deploy — your public URL is ready
 
 ---
 
 ## Cost
 
-- **NewsAPI** — free tier gives 100 requests/day (each report uses 1 request per lens selected)
+- **NewsAPI** — free tier: 100 requests/day (each report uses 1 request per lens selected)
 - **OpenAI GPT-4o** — roughly $0.01–0.05 per report, $0.05–0.15 per deep dive
 
 ---
